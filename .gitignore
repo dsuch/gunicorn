@@ -10,7 +10,8 @@ setuptools-*
 nohup.out
 .coverage
 coverage.xml
-examples/frameworks/pylonstest/PasteScript*
-examples/frameworks/pylonstest/pylonstest.egg-info/
-examples/frameworks/django/testing/testdb.sql
+gunicorn/examples/frameworks/pylonstest/PasteScript*
+gunicorn/examples/frameworks/pylonstest/pylonstest.egg-info/
+gunicorn/examples/frameworks/django/testing/testdb.sql
 .tox
+
