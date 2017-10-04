@@ -14,53 +14,53 @@ import gunicorn.util as util
 import gunicorn.workers.base as base
 from gunicorn import six
 
-ALREADY_HANDLED = object()
-
 
 class AsyncWorker(base.Worker):
 
     def __init__(self, *args, **kwargs):
         super(AsyncWorker, self).__init__(*args, **kwargs)
         self.worker_connections = self.cfg.worker_connections
+        self.keep_alive = self.cfg.keepalive
 
     def timeout_ctx(self):
         raise NotImplementedError()
 
-    def handle(self, listener, client, addr):
+    def handle(self, listener, client, addr, _socket_error=socket.error, _next=six.next, _RequestParser=http.RequestParser,
+            _NoMoreData=http.errors.NoMoreData, _SSLError=ssl.SSLError):
         req = None
         try:
-            parser = http.RequestParser(self.cfg, client)
+            parser = _RequestParser(self.cfg, client)
             try:
-                if not self.cfg.keepalive:
-                    req = six.next(parser)
+                if not self.keep_alive:
+                    req = _next(parser)
                     self.handle_request(listener, req, client, addr)
                 else:
                     # keepalive loop
                     while True:
                         req = None
                         with self.timeout_ctx():
-                            req = six.next(parser)
+                            req = _next(parser)
                         if not req:
                             break
                         self.handle_request(listener, req, client, addr)
-            except http.errors.NoMoreData as e:
+            except _NoMoreData as e:
                 self.log.debug("Ignored premature client disconnection. %s", e)
             except StopIteration as e:
                 self.log.debug("Closing connection. %s", e)
-            except ssl.SSLError:
+            except _SSLError:
                 raise  # pass to next try-except level
-            except socket.error:
+            except _socket_error:
                 raise  # pass to next try-except level
             except Exception as e:
                 self.handle_error(req, client, addr, e)
-        except ssl.SSLError as e:
+        except _SSLError as e:
             if e.args[0] == ssl.SSL_ERROR_EOF:
                 self.log.debug("ssl connection closed")
                 client.close()
             else:
                 self.log.debug("Error processing SSL request.")
                 self.handle_error(req, client, addr, e)
-        except socket.error as e:
+        except _socket_error as e:
             if e.args[0] not in (errno.EPIPE, errno.ECONNRESET):
                 self.log.exception("Socket error processing request.")
             else:
@@ -71,44 +71,31 @@ class AsyncWorker(base.Worker):
         except Exception as e:
             self.handle_error(req, client, addr, e)
         finally:
-            util.close(client)
-
-    def handle_request(self, listener, req, sock, addr):
-        request_start = datetime.now()
-        environ = {}
-        resp = None
-        try:
-            self.cfg.pre_request(self, req)
-            resp, environ = wsgi.create(req, sock, addr,
-                    listener.getsockname(), self.cfg)
-            self.nr += 1
-            if self.alive and self.nr >= self.max_requests:
-                self.log.info("Autorestarting worker after current request.")
-                resp.force_close()
-                self.alive = False
-
-            if not self.cfg.keepalive:
-                resp.force_close()
-
-            respiter = self.wsgi(environ, resp.start_response)
-            if respiter == ALREADY_HANDLED:
-                return False
             try:
-                if isinstance(respiter, environ['wsgi.file_wrapper']):
-                    resp.write_file(respiter)
-                else:
-                    for item in respiter:
-                        resp.write(item)
-                resp.close()
-                request_time = datetime.now() - request_start
-                self.log.access(resp, req, environ, request_time)
-            finally:
-                if hasattr(respiter, "close"):
-                    respiter.close()
-            if resp.should_close():
-                raise StopIteration()
+                client.close()
+            except _socket_error:
+                pass
+
+    def handle_request(self, listener, req, sock, addr, _wsgi_create=wsgi.create):
+
+        environ = {}
+        response = None
+        try:
+
+            response, environ = _wsgi_create(req, sock, addr, listener.getsockname(), self.cfg)
+
+            if not self.keep_alive:
+                response.force_close()
+
+            response_iter = self.wsgi(environ, response.start_response)
+
+            for item in response_iter:
+                response.write(item)
+
+            response.close()
+
         except Exception:
-            if resp and resp.headers_sent:
+            if response and response.headers_sent:
                 # If the requests have already been sent, we should close the
                 # connection to indicate the error.
                 try:
@@ -118,9 +105,5 @@ class AsyncWorker(base.Worker):
                     pass
                 raise StopIteration()
             raise
-        finally:
-            try:
-                self.cfg.post_request(self, req, environ, resp)
-            except Exception:
-                self.log.exception("Exception in post_request hook")
+
         return True

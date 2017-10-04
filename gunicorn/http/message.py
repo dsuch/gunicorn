@@ -3,7 +3,7 @@
 # This file is part of gunicorn released under the MIT license.
 # See the NOTICE for more information.
 
-import re
+import regex as re
 import socket
 from errno import ENOTCONN
 
@@ -16,35 +16,20 @@ from gunicorn.http.errors import InvalidProxyLine, ForbiddenProxyRequest
 from gunicorn.six import BytesIO, urlsplit, bytes_to_str
 
 MAX_REQUEST_LINE = 8190
-MAX_HEADERS = 32768
+MAX_HEADERS = 128
 MAX_HEADERFIELD_SIZE = 8190
 
+MAX_BUFFER_HEADERS = MAX_REQUEST_LINE * (MAX_HEADERFIELD_SIZE + 2) + 4
 
 class Message(object):
-    def __init__(self, cfg, unreader):
+    def __init__(self, cfg, unreader, _MAX_HEADERS=MAX_HEADERS, _MAX_HEADERFIELD_SIZE=MAX_HEADERFIELD_SIZE,
+            _MAX_BUFFER_HEADERS=MAX_BUFFER_HEADERS):
         self.cfg = cfg
         self.unreader = unreader
         self.version = None
         self.headers = []
         self.trailers = []
         self.body = None
-
-        self.hdrre = re.compile("[\x00-\x1F\x7F()<>@,;:\[\]={} \t\\\\\"]")
-
-        # set headers limits
-        self.limit_request_fields = cfg.limit_request_fields
-        if (self.limit_request_fields <= 0
-            or self.limit_request_fields > MAX_HEADERS):
-            self.limit_request_fields = MAX_HEADERS
-        self.limit_request_field_size = cfg.limit_request_field_size
-        if (self.limit_request_field_size < 0
-            or self.limit_request_field_size > MAX_HEADERFIELD_SIZE):
-            self.limit_request_field_size = MAX_HEADERFIELD_SIZE
-
-        # set max header buffer size
-        max_header_field_size = self.limit_request_field_size or MAX_HEADERFIELD_SIZE
-        self.max_buffer_headers = self.limit_request_fields * \
-            (max_header_field_size + 2) + 4
 
         unused = self.parse(self.unreader)
         self.unreader.unread(unused)
@@ -53,58 +38,68 @@ class Message(object):
     def parse(self):
         raise NotImplementedError()
 
-    def parse_headers(self, data):
+    def parse_headers(self, data, header_re=re.compile("[\x00-\x1F\x7F()<>@,;:\[\]={} \t\\\\\"]"), _MAX_HEADERS=MAX_HEADERS,
+            _MAX_HEADERFIELD_SIZE=MAX_HEADERFIELD_SIZE):
         headers = []
 
         # Split lines on \r\n keeping the \r\n on each line
-        lines = [bytes_to_str(line) + "\r\n" for line in data.split(b"\r\n")]
+        lines = [line + "\r\n" for line in data.split(b"\r\n")]
 
         # Parse headers into key/value pairs paying attention
         # to continuation lines.
         while len(lines):
-            if len(headers) >= self.limit_request_fields:
+            if len(headers) >= _MAX_HEADERS:
                 raise LimitRequestHeaders("limit request headers fields")
 
             # Parse initial header name : value pair.
             curr = lines.pop(0)
             header_length = len(curr)
+
             if curr.find(":") < 0:
                 raise InvalidHeader(curr.strip())
+
             name, value = curr.split(":", 1)
             name = name.rstrip(" \t").upper()
-            if self.hdrre.search(name):
+
+            if header_re.search(name):
                 raise InvalidHeaderName(name)
 
             name, value = name.strip(), [value.lstrip()]
 
             # Consume value continuation lines
             while len(lines) and lines[0].startswith((" ", "\t")):
+
                 curr = lines.pop(0)
                 header_length += len(curr)
-                if header_length > self.limit_request_field_size > 0:
-                    raise LimitRequestHeaders("limit request headers "
-                            + "fields size")
+                if header_length > _MAX_HEADERFIELD_SIZE:
+                    raise LimitRequestHeaders("limit request headers fields size")
                 value.append(curr)
+
             value = ''.join(value).rstrip()
 
-            if header_length > self.limit_request_field_size > 0:
+            if header_length > _MAX_HEADERFIELD_SIZE:
                 raise LimitRequestHeaders("limit request headers fields size")
+
             headers.append((name, value))
+
         return headers
 
-    def set_body_reader(self):
+    def set_body_reader(self, _Body=Body, _LengthReader=LengthReader, _ChunkedReader=ChunkedReader, _EOFReader=EOFReader):
+
         chunked = False
         content_length = None
+
         for (name, value) in self.headers:
+
             if name == "CONTENT-LENGTH":
                 content_length = value
+
             elif name == "TRANSFER-ENCODING":
                 chunked = value.lower() == "chunked"
-            elif name == "SEC-WEBSOCKET-KEY1":
-                content_length = 8
 
         if chunked:
-            self.body = Body(ChunkedReader(self, self.unreader))
+            self.body = _Body(_ChunkedReader(self, self.unreader))
+
         elif content_length is not None:
             try:
                 content_length = int(content_length)
@@ -114,9 +109,10 @@ class Message(object):
             if content_length < 0:
                 raise InvalidHeader("CONTENT-LENGTH", req=self)
 
-            self.body = Body(LengthReader(self.unreader, content_length))
+            self.body = _Body(_LengthReader(self.unreader, content_length))
+
         else:
-            self.body = Body(EOFReader(self.unreader))
+            self.body = _Body(_EOFReader(self.unreader))
 
     def should_close(self):
         for (h, v) in self.headers:
@@ -131,8 +127,7 @@ class Message(object):
 
 
 class Request(Message):
-    def __init__(self, cfg, unreader, req_number=1):
-        self.methre = re.compile("[A-Z0-9$-_.]{3,20}")
+    def __init__(self, cfg, unreader, req_number=1, _MAX_REQUEST_LINE=MAX_REQUEST_LINE):
         self.versre = re.compile("HTTP/(\d+).(\d+)")
 
         self.method = None
@@ -142,10 +137,7 @@ class Request(Message):
         self.fragment = None
 
         # get max request line size
-        self.limit_request_line = cfg.limit_request_line
-        if (self.limit_request_line < 0
-            or self.limit_request_line >= MAX_REQUEST_LINE):
-            self.limit_request_line = MAX_REQUEST_LINE
+        self.limit_request_line = _MAX_REQUEST_LINE
 
         self.req_number = req_number
         self.proxy_protocol_info = None
@@ -159,22 +151,23 @@ class Request(Message):
             raise NoMoreData(buf.getvalue())
         buf.write(data)
 
-    def parse(self, unreader):
-        buf = BytesIO()
+    def parse(self, unreader, _MAX_BUFFER_HEADERS=MAX_BUFFER_HEADERS, _MAX_REQUEST_LINE=MAX_REQUEST_LINE, _BytesIO=BytesIO):
+        buf = _BytesIO()
         self.get_data(unreader, buf, stop=True)
 
         # get request line
-        line, rbuf = self.read_line(unreader, buf, self.limit_request_line)
+        line, rbuf = self.read_line(unreader, buf, _MAX_REQUEST_LINE)
 
         # proxy protocol
-        if self.proxy_protocol(bytes_to_str(line)):
-            # get next request line
-            buf = BytesIO()
-            buf.write(rbuf)
-            line, rbuf = self.read_line(unreader, buf, self.limit_request_line)
+        if self.cfg.proxy_protocol:
+            if self.proxy_protocol(bytes_to_str(line)):
+                # get next request line
+                buf = _BytesIO()
+                buf.write(rbuf)
+                line, rbuf = self.read_line(unreader, buf, _MAX_REQUEST_LINE)
 
         self.parse_request_line(bytes_to_str(line))
-        buf = BytesIO()
+        buf = _BytesIO()
         buf.write(rbuf)
 
         # Headers
@@ -189,7 +182,7 @@ class Request(Message):
             if idx < 0 and not done:
                 self.get_data(unreader, buf)
                 data = buf.getvalue()
-                if len(data) > self.max_buffer_headers:
+                if len(data) > _MAX_BUFFER_HEADERS:
                     raise LimitRequestHeaders("max buffer headers")
             else:
                 break
@@ -201,7 +194,7 @@ class Request(Message):
         self.headers = self.parse_headers(data[:idx])
 
         ret = data[idx + 4:]
-        buf = BytesIO()
+        buf = _BytesIO()
         return ret
 
     def read_line(self, unreader, buf, limit=0):
@@ -301,13 +294,14 @@ class Request(Message):
             "proxy_port": d_port
         }
 
-    def parse_request_line(self, line):
+    def parse_request_line(self, line, method_re=re.compile("[A-Z0-9$-_.]{3,20}"),
+            version_re=re.compile("HTTP/(\d+).(\d+)")):
         bits = line.split(None, 2)
         if len(bits) != 3:
             raise InvalidRequestLine(line)
 
         # Method
-        if not self.methre.match(bits[0]):
+        if not method_re.match(bits[0]):
             raise InvalidRequestMethod(bits[0])
         self.method = bits[0].upper()
 
@@ -328,9 +322,11 @@ class Request(Message):
         self.fragment = parts.fragment or ""
 
         # Version
-        match = self.versre.match(bits[2])
+        match = version_re.match(bits[2])
+
         if match is None:
             raise InvalidHTTPVersion(bits[2])
+
         self.version = (int(match.group(1)), int(match.group(2)))
 
     def set_body_reader(self):

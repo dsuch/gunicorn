@@ -11,10 +11,9 @@ class Parser(object):
     def __init__(self, mesg_class, cfg, source):
         self.mesg_class = mesg_class
         self.cfg = cfg
-        if hasattr(source, "recv"):
-            self.unreader = SocketUnreader(source)
-        else:
-            self.unreader = IterUnreader(source)
+
+        self.unreader = SocketUnreader(source)
+
         self.mesg = None
 
         # request counter (for keepalive connetions)

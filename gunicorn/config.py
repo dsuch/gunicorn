@@ -138,17 +138,17 @@ class Config(object):
     @property
     def ssl_options(self):
         opts = {}
-        
+
         for attr in('certfile', 'keyfile', 'cert_reqs', 'ssl_version', \
                 'ca_certs', 'suppress_ragged_eofs', 'do_handshake_on_connect',
                 'ciphers'):
-            
+
             # suppress_ragged_eofs/do_handshake_on_connect are booleans that can
             # be False hence we use hasattr instead of getattr(self, attr, None).
             if hasattr(self, attr):
                 value = getattr(self, attr)
                 opts[attr] = value
-                
+
         return opts
 
     @property
@@ -1011,7 +1011,7 @@ class LoggerClass(Setting):
     cli = ["--logger-class"]
     meta = "STRING"
     validator = validate_class
-    default = "simple"
+    default = "gunicorn.glogging.Logger"
     desc = """\
         The logger you want to use to log events in gunicorn.
 
@@ -1434,7 +1434,7 @@ class CertFile(Setting):
     desc = """\
     SSL certificate file
     """
-    
+
 class SSLVersion(Setting):
     name = "ssl_version"
     section = "Ssl"
@@ -1444,7 +1444,7 @@ class SSLVersion(Setting):
     desc = """\
     SSL version to use (see stdlib ssl module's)
     """
-    
+
 class CertReqs(Setting):
     name = "cert_reqs"
     section = "Ssl"
@@ -1454,7 +1454,7 @@ class CertReqs(Setting):
     desc = """\
     Whether client certificate is required (see stdlib ssl module's)
     """
-    
+
 class CACerts(Setting):
     name = "ca_certs"
     section = "Ssl"
@@ -1465,7 +1465,7 @@ class CACerts(Setting):
     desc = """\
     CA certificates file
     """
-    
+
 class SuppressRaggedEOFs(Setting):
     name = "suppress_ragged_eofs"
     section = "Ssl"
@@ -1487,7 +1487,7 @@ class DoHandshakeOnConnect(Setting):
     desc = """\
     Whether to perform SSL handshake on socket connect (see stdlib ssl module's)
     """
-    
+
 class Ciphers(Setting):
     name = "ciphers"
     section = "Ssl"
